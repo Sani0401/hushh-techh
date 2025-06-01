@@ -332,6 +332,8 @@ adminRouter.post("/kyc-verification", upload.fields([
     { name: 'financialDocuments', maxCount: 5 }
 ]), async (req, res) => {
     try {
+        console.log('Received files:', req.files); // Debug log
+
         // Parse JSON strings from form data
         const investorType = req.body.investorType;
         const contactInfo = JSON.parse(req.body.contactInfo);
@@ -341,59 +343,84 @@ adminRouter.post("/kyc-verification", upload.fields([
         const beneficialOwners = req.body.beneficialOwners ? JSON.parse(req.body.beneficialOwners) : null;
         const authorizedSignatories = req.body.authorizedSignatories ? JSON.parse(req.body.authorizedSignatories) : null;
 
+        console.log('Investor Type:', investorType); // Debug log
+        console.log('Contact Info:', contactInfo); // Debug log
+
         // Initialize documents object with null values
         const documents = createEmptyDocumentsObject();
 
         // Handle file uploads and create document references
         if (req.files) {
-            await Promise.all(
-                Object.entries(req.files).map(async ([fieldName, files]) => {
-                    const uploadPromises = files.map(async (file, index) => {
-                        const fileExt = getFileExtension(file.originalname);
-                        const sanitizedDocType = sanitizeFilename(fieldName);
-                        const timestamp = new Date().getTime();
-                        // Create filename with document type and timestamp
-                        const fileName = `${sanitizedDocType}_${timestamp}${index > 0 ? `_${index}` : ''}.${fileExt}`;
-                        
-                        // Create user's folder path using email
-                        const userFolder = `${contactInfo.email}`;
-                        
-                        const { data, error } = await supabase.storage
-                            .from('kyc-documents')
-                            .upload(`${userFolder}/${fileName}`, file.buffer, {
-                                contentType: file.mimetype,
-                                upsert: false
-                            });
+            console.log('Processing files for upload...'); // Debug log
+            try {
+                await Promise.all(
+                    Object.entries(req.files).map(async ([fieldName, files]) => {
+                        console.log(`Processing ${fieldName} files:`, files.length); // Debug log
+                        const uploadPromises = files.map(async (file, index) => {
+                            try {
+                                const fileExt = getFileExtension(file.originalname);
+                                const sanitizedDocType = sanitizeFilename(fieldName);
+                                const timestamp = new Date().getTime();
+                                const fileName = `${sanitizedDocType}_${timestamp}${index > 0 ? `_${index}` : ''}.${fileExt}`;
+                                const userFolder = `${contactInfo.email}`;
+                                
+                                console.log(`Uploading ${fileName} to ${userFolder}`); // Debug log
+                                
+                                const { data, error } = await supabase.storage
+                                    .from('kyc-documents')
+                                    .upload(`${userFolder}/${fileName}`, file.buffer, {
+                                        contentType: file.mimetype,
+                                        upsert: false
+                                    });
 
-                        if (error) throw error;
+                                if (error) {
+                                    console.error(`Error uploading ${fileName}:`, error); // Debug log
+                                    throw error;
+                                }
 
-                        // Create document reference with more metadata
-                        const documentRef = {
-                            url: data.path,
-                            fileName: file.originalname,
-                            documentType: fieldName,
-                            mimeType: file.mimetype,
-                            fileSize: file.size,
-                            uploadedAt: new Date().toISOString(),
-                            storagePath: `${userFolder}/${fileName}`
-                        };
+                                console.log(`Successfully uploaded ${fileName}`); // Debug log
 
-                        // Handle multiple files for the same type
-                        if (fieldName === 'beneficialOwnerIds' || fieldName === 'financialDocuments') {
-                            if (!documents[fieldName]) {
-                                documents[fieldName] = [];
+                                // Create document reference with more metadata
+                                const documentRef = {
+                                    url: data.path,
+                                    fileName: file.originalname,
+                                    documentType: fieldName,
+                                    mimeType: file.mimetype,
+                                    fileSize: file.size,
+                                    uploadedAt: new Date().toISOString(),
+                                    storagePath: `${userFolder}/${fileName}`
+                                };
+
+                                // Handle multiple files for the same type
+                                if (fieldName === 'beneficialOwnerIds' || fieldName === 'financialDocuments') {
+                                    if (!documents[fieldName]) {
+                                        documents[fieldName] = [];
+                                    }
+                                    documents[fieldName].push(documentRef);
+                                } else {
+                                    documents[fieldName] = documentRef;
+                                }
+
+                                console.log(`Added document reference for ${fieldName}`); // Debug log
+                                return data.path;
+                            } catch (error) {
+                                console.error(`Error processing file ${file.originalname}:`, error); // Debug log
+                                throw error;
                             }
-                            documents[fieldName].push(documentRef);
-                        } else {
-                            documents[fieldName] = documentRef;
-                        }
-
-                        return data.path;
-                    });
-                    return Promise.all(uploadPromises);
-                })
-            );
+                        });
+                        return Promise.all(uploadPromises);
+                    })
+                );
+                console.log('All files processed successfully'); // Debug log
+            } catch (error) {
+                console.error('Error in file processing:', error); // Debug log
+                throw error;
+            }
+        } else {
+            console.log('No files received in request'); // Debug log
         }
+
+        console.log('Final documents object:', documents); // Debug log
 
         // Prepare the data for insertion
         const kycData = {
@@ -426,6 +453,7 @@ adminRouter.post("/kyc-verification", upload.fields([
 
         // Add institutional-specific data if applicable
         if (investorType === 'institutional') {
+            console.log('Processing institutional investor data'); // Debug log
             kycData.beneficial_owners = beneficialOwners?.map((owner, index) => ({
                 ...owner,
                 idDocument: documents.beneficialOwnerIds?.[index] || null
@@ -435,7 +463,30 @@ adminRouter.post("/kyc-verification", upload.fields([
                 ...signatory,
                 authorizationDocument: documents.authorizationDocument || null
             })) || [];
+
+            // Add institutional-specific documents
+            kycData.investor_details.documents = {
+                ...documents,
+                articlesOfIncorporation: documents.articlesOfIncorporation,
+                operatingAgreement: documents.operatingAgreement,
+                certificateOfGoodStanding: documents.certificateOfGoodStanding,
+                financialDocuments: documents.financialDocuments,
+                beneficialOwnerIds: documents.beneficialOwnerIds,
+                authorizationDocument: documents.authorizationDocument
+            };
+        } else {
+            console.log('Processing individual investor data'); // Debug log
+            // Add individual-specific documents
+            kycData.investor_details.documents = {
+                ...documents,
+                idDocument: documents.idDocument,
+                addressProof: documents.addressProof,
+                taxForm: documents.taxForm,
+                sourceOfFundsDoc: documents.sourceOfFundsDoc
+            };
         }
+
+        console.log('Prepared KYC data:', JSON.stringify(kycData, null, 2)); // Debug log
 
         // Insert the KYC application
         const { data: kycApplication, error: kycError } = await supabase
@@ -446,14 +497,19 @@ adminRouter.post("/kyc-verification", upload.fields([
                 declarations: kycData.declarations,
                 edd_screening: kycData.edd_screening,
                 investor_details: kycData.investor_details,
-                beneficial_owners: kycData.beneficial_owners,
-                authorized_signatories: kycData.authorized_signatories,
-                documents:{}
+                beneficial_owners: kycData.beneficial_owners || null,
+                authorized_signatories: kycData.authorized_signatories || null,
+                documents: kycData.investor_details.documents // Store documents consistently
             })
             .select()
             .single();
 
-        if (kycError) throw kycError;
+        if (kycError) {
+            console.error('Database insertion error:', kycError); // Debug log
+            throw kycError;
+        }
+
+        console.log('KYC application created:', kycApplication); // Debug log
 
         // After successful database insertion
         if (kycApplication) {
@@ -470,7 +526,8 @@ adminRouter.post("/kyc-verification", upload.fields([
                 success: true,
                 message: 'KYC application submitted successfully',
                 applicationId: kycApplication.id,
-                emailSent: emailSent
+                emailSent: emailSent,
+                documents: documents // Include documents in response for verification
             });
         } else {
             throw new Error('Failed to create KYC application');
