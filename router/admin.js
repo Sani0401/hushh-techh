@@ -244,20 +244,11 @@ const blobToBuffer = async (blob) => {
 // Function to send confirmation email
 const sendConfirmationEmail = async (contactInfo, applicationId, investorType, investorDetails, documents) => {
     try {
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: contactInfo.email,
-            subject: 'KYC Application Submission Confirmation - Hushh Renaissance Aloha & Alpha Fund, LP',
-            html: createEmailTemplate(contactInfo, applicationId, investorType, investorDetails, documents)
-        };
-
-        // Send email to applicant
-        await transporter.sendMail(mailOptions);
-
-        // Send notification to admin
+        // Send notification to admin with full details
         const adminMailOptions = {
             from: process.env.EMAIL_USER,
             to: process.env.ADMIN_EMAIL,
+            cc: process.env.COS_EMAIL, // CC to COS email
             subject: `New KYC Application Received - ${applicationId}`,
             html: `
                 <div style="font-family: Arial, sans-serif;">
