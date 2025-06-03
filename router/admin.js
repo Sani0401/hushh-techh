@@ -121,9 +121,6 @@ adminRouter.all('/kyc-verification-status', async (req, res) => {
                         <h2>${result.success ? 'Status Updated Successfully' : 'Update Failed'}</h2>
                         <p>${result.message}</p>
                     </div>
-                    <a href="${process.env.ADMIN_DASHBOARD_URL || 'http://localhost:3000'}/kyc-applications" class="button">
-                        Return to Dashboard
-                    </a>
                 </body>
                 </html>
             `;
