@@ -35,7 +35,7 @@ const getKYCStatus = async (email) => {
                 return {
                     success: false,
                     message: 'No KYC application found for this email',
-                    status: 'not_found'
+                    status: 'not applied'
                 };
             }
             
