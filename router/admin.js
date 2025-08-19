@@ -204,35 +204,265 @@ adminRouter.post('/verify-NDA-documents', async (req, res) => {
     }
 })
 
-// Function to generate an access token using JWT Grant Flow
-async function generateAccessToken() {
-    const privateKey = fs.readFileSync('./src/config/private.key'); // Corrected the relative path to the private key
-    const apiClient = new docusign.ApiClient();
-
-    apiClient.setOAuthBasePath('account-d.docusign.com'); // Demo environment
-    const integratorKey = process.env.DOCUSIGN_INTEGRATOR_KEY; // Add this to your .env file
-    const userId = process.env.DOCUSIGN_USER_ID; // Add this to your .env file
-    const scopes = ['signature'];
-    const expiresIn = 3600; // Token expiration time in seconds
-
+// Add this function before generateAccessToken
+async function checkDocuSignAccountStatus() {
     try {
-        const response = await apiClient.requestJWTUserToken(integratorKey, userId, scopes, privateKey, expiresIn);
-        const accessToken = response.body.access_token;
-        console.log('Generated Access Token:', accessToken);
-        return accessToken;
+        console.log('Checking DocuSign account status...');
+        const apiClient = new docusign.ApiClient();
+        apiClient.setOAuthBasePath('account-d.docusign.com');
+        
+        // First try to get account information without authentication
+        const accountsApi = new docusign.AccountsApi(apiClient);
+        
+        try {
+            const accountInfo = await accountsApi.getAccountInformation(process.env.DOCUSIGN_ACCOUNT_ID);
+            console.log('Account status check:', {
+                accountId: accountInfo.accountId,
+                accountName: accountInfo.accountName,
+                accountType: accountInfo.accountType,
+                isActive: accountInfo.status === 'active',
+                status: accountInfo.status,
+                createdDate: accountInfo.createdDate,
+                lastModifiedDate: accountInfo.lastModifiedDate
+            });
+
+            if (accountInfo.status !== 'active') {
+                throw new Error(`DocuSign account is not active. Current status: ${accountInfo.status}`);
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Account status check failed:', {
+                error: error.message,
+                response: error.response?.data,
+                status: error.response?.status
+            });
+
+            // Check for specific error conditions
+            if (error.response?.status === 401) {
+                throw new Error('DocuSign account credentials are invalid or expired. Please check your developer account status.');
+            } else if (error.response?.status === 404) {
+                throw new Error('DocuSign account not found. The account may have been deactivated or deleted.');
+            } else if (error.response?.status === 403) {
+                throw new Error('Access to DocuSign account is forbidden. The account may be suspended or restricted.');
+            }
+
+            throw error;
+        }
     } catch (error) {
-        console.error('Error generating access token:', error);
+        console.error('Error checking DocuSign account status:', error);
+        throw new Error(`Failed to verify DocuSign account status: ${error.message}`);
+    }
+}
+
+// Modify the generateAccessToken function to check account status first
+async function generateAccessToken() {
+    try {
+        // Check account status before proceeding
+        await checkDocuSignAccountStatus();
+        
+        console.log('Initializing DocuSign API client...');
+        const apiClient = new docusign.ApiClient();
+        
+        // Set the OAuth base path for the demo environment
+        apiClient.setOAuthBasePath('account-d.docusign.com');
+        
+        // Validate required environment variables
+        const requiredEnvVars = {
+            'DOCUSIGN_INTEGRATOR_KEY': process.env.DOCUSIGN_INTEGRATOR_KEY,
+            'DOCUSIGN_USER_ID': process.env.DOCUSIGN_USER_ID,
+            'DOCUSIGN_ACCOUNT_ID': process.env.DOCUSIGN_ACCOUNT_ID
+        };
+
+        // Check for missing environment variables
+        const missingVars = Object.entries(requiredEnvVars)
+            .filter(([_, value]) => !value)
+            .map(([key]) => key);
+
+        if (missingVars.length > 0) {
+            throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+        }
+
+        // Log the configuration
+        console.log('DocuSign Configuration:', {
+            integratorKey: process.env.DOCUSIGN_INTEGRATOR_KEY,
+            userId: process.env.DOCUSIGN_USER_ID,
+            accountId: process.env.DOCUSIGN_ACCOUNT_ID,
+            privateKeyPath: './src/config/private.key'
+        });
+
+        // Read and validate the private key
+        let privateKey;
+        try {
+            // Read the private key file
+            const privateKeyContent = fs.readFileSync('./src/config/private.key', 'utf8');
+            
+            // Log the raw key content (first and last few characters only)
+            console.log('Raw private key content:', {
+                firstChars: privateKeyContent.substring(0, 50) + '...',
+                lastChars: '...' + privateKeyContent.substring(privateKeyContent.length - 50),
+                totalLength: privateKeyContent.length
+            });
+
+            // Check if the key is in PKCS#1 or PKCS#8 format
+            const isPKCS1 = privateKeyContent.includes('-----BEGIN RSA PRIVATE KEY-----');
+            const isPKCS8 = privateKeyContent.includes('-----BEGIN PRIVATE KEY-----');
+            
+            console.log('Private key format check:', {
+                isPKCS1,
+                isPKCS8,
+                hasBeginMarker: isPKCS1 || isPKCS8,
+                hasEndMarker: privateKeyContent.includes('-----END RSA PRIVATE KEY-----') || 
+                            privateKeyContent.includes('-----END PRIVATE KEY-----')
+            });
+
+            if (!isPKCS1 && !isPKCS8) {
+                throw new Error('Invalid private key format. Must be in PKCS#1 or PKCS#8 PEM format');
+            }
+
+            // Clean up the private key
+            // 1. Remove any whitespace and newlines
+            // 2. Ensure proper line endings
+            // 3. Keep the BEGIN and END markers
+            privateKey = privateKeyContent
+                .split('\n')
+                .filter(line => line.trim() && !line.startsWith('-----'))
+                .join('')
+                .trim();
+
+            // Add back the proper headers based on the format
+            if (isPKCS1) {
+                privateKey = `-----BEGIN RSA PRIVATE KEY-----\n${privateKey}\n-----END RSA PRIVATE KEY-----`;
+            } else {
+                privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----`;
+            }
+
+            // Log the processed key format
+            console.log('Processed private key format:', {
+                format: isPKCS1 ? 'PKCS#1' : 'PKCS#8',
+                hasProperHeaders: privateKey.includes('-----BEGIN') && privateKey.includes('-----END'),
+                keyLength: privateKey.length
+            });
+
+        } catch (error) {
+            console.error('Error reading or validating private key:', error);
+            throw new Error(`Failed to read or validate private key: ${error.message}`);
+        }
+
+        const integratorKey = process.env.DOCUSIGN_INTEGRATOR_KEY;
+        const userId = process.env.DOCUSIGN_USER_ID;
+        
+        // Use the correct scope for JWT Grant
+        const scopes = ['signature', 'impersonation'];
+        const expiresIn = 3600; // 1 hour
+
+        // Log the request parameters
+        console.log('Preparing JWT token request with:', {
+            integratorKey,
+            userId,
+            scopes,
+            expiresIn,
+            privateKeyFormat: privateKey.includes('RSA PRIVATE KEY') ? 'PKCS#1' : 'PKCS#8',
+            oAuthBasePath: apiClient.getOAuthBasePath()
+        });
+
+        try {
+            // Generate the JWT token
+            console.log('Attempting to generate JWT token...');
+            const response = await apiClient.requestJWTUserToken(
+                integratorKey,
+                userId,
+                scopes,
+                privateKey,
+                expiresIn
+            );
+
+            // Log the response details
+            console.log('JWT token response:', {
+                hasResponse: !!response,
+                hasBody: !!response?.body,
+                hasToken: !!response?.body?.access_token,
+                responseKeys: response ? Object.keys(response) : [],
+                bodyKeys: response?.body ? Object.keys(response.body) : []
+            });
+
+            if (!response?.body?.access_token) {
+                throw new Error('Invalid response from DocuSign authentication service - no access token received');
+            }
+
+            const accessToken = response.body.access_token;
+            console.log('Successfully generated access token');
+            return accessToken;
+
+        } catch (tokenError) {
+            // Log detailed error information
+            console.error('Token generation error details:', {
+                error: tokenError.message,
+                response: tokenError.response?.data,
+                status: tokenError.response?.status,
+                statusText: tokenError.response?.statusText,
+                headers: tokenError.response?.headers,
+                request: {
+                    url: tokenError.config?.url,
+                    method: tokenError.config?.method,
+                    headers: Object.keys(tokenError.config?.headers || {}),
+                    baseURL: tokenError.config?.baseURL
+                }
+            });
+
+            // Check for specific error conditions
+            if (tokenError.response?.data?.error) {
+                const errorMessage = tokenError.response.data.error_description || tokenError.response.data.error;
+                switch (tokenError.response.data.error) {
+                    case 'invalid_grant':
+                        throw new Error(`Invalid grant: ${errorMessage}. Please check your Integrator Key, User ID, and private key.`);
+                    case 'invalid_client':
+                        throw new Error(`Invalid client: ${errorMessage}. Please check your Integrator Key.`);
+                    case 'invalid_request':
+                        throw new Error(`Invalid request: ${errorMessage}. Please check your JWT token configuration.`);
+                    case 'invalid_scope':
+                        throw new Error(`Invalid scope: ${errorMessage}. The requested scope is not allowed.`);
+                    default:
+                        throw new Error(`DocuSign API error: ${errorMessage}`);
+                }
+            }
+
+            // If we don't have a specific error from DocuSign, throw a more generic error
+            throw new Error(`Failed to generate JWT token: ${tokenError.message}`);
+        }
+    } catch (error) {
+        console.error('Error in generateAccessToken:', {
+            error: error.message,
+            code: error.code,
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            stack: error.stack
+        });
         throw error;
     }
 }
 
-// Example usage in the /send-docusign endpoint
+// Modify the /send-docusign endpoint to handle account status errors
 adminRouter.get('/send-docusign', async (req, res) => {
     try {
         const { investorType, userData, companyData } = req.query;
 
         if (!investorType && (!userData || !companyData)) {
             return res.status(400).json({ error: 'Missing required parameters' });
+        }
+
+        try {
+            // Check account status first
+            await checkDocuSignAccountStatus();
+        } catch (accountError) {
+            console.error('DocuSign account status check failed:', accountError);
+            return res.status(503).json({
+                error: 'DocuSign account is not available',
+                details: accountError.message,
+                action: 'Please verify your DocuSign developer account status or contact support to renew your account.',
+                retryAfter: 60
+            });
         }
 
         const parsedUserData = userData ? JSON.parse(userData) : null;
