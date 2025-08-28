@@ -94,7 +94,7 @@ hushhRouter.post("/chat", async (req, res) => {
         if (!query) {
             return res.status(400).json({
                 success: false,
-                message: 'Query is required'
+                message: "Query is required",
             });
         }
 
@@ -106,95 +106,94 @@ hushhRouter.post("/chat", async (req, res) => {
         });
 
         // Search for similar content in the knowledge base
-        const { data: similarContent, error: searchError } = await supabase.rpc(
-            'match_documents',
+        let { data: similarContent, error: searchError } = await supabase.rpc(
+            "match_documents",
             {
                 query_embedding: queryEmbedding.data[0].embedding,
                 match_threshold: 0.7,
-                match_count: 5
+                match_count: 5,
             }
         );
 
         if (searchError) {
-            console.error('Vector search error:', searchError);
+            console.error("Vector search error:", searchError);
+
             // Fallback to keyword search if vector search fails
             const { data: fallbackData, error: fallbackError } = await supabase
-                .from('hushh_knowledge_base')
-                .select('content, metadata, category')
-                .ilike('content', `%${query}%`)
+                .from("hushh_knowledge_base")
+                .select("content, metadata, category, url")
+                .ilike("content", `%${query}%`)
                 .limit(5);
 
             if (fallbackError) {
-                console.error('Fallback search error:', fallbackError);
+                console.error("Fallback search error:", fallbackError);
                 return res.status(500).json({
                     success: false,
-                    message: 'Error searching knowledge base',
-                    error: fallbackError.message
+                    message: "Error searching knowledge base",
+                    error: fallbackError.message,
                 });
             }
             similarContent = fallbackData;
         }
 
         // Prepare context from similar content
-        let context = '';
+        let context = "";
         if (similarContent && similarContent.length > 0) {
-            context = similarContent
-                .map(item => item.content)
-                .join('\n\n');
+            context = similarContent.map((item) => item.content).join("\n\n");
         }
 
-        // Prepare conversation history for context
-        const conversationContext = conversation_history
-            .slice(-5) // Keep last 5 exchanges
-            .map(exchange => `${exchange.role}: ${exchange.content}`)
-            .join('\n');
+        // System prompt for chatbot
+        const systemPrompt = `You are Hushh's AI Assistant, trained to answer queries about Hushh's products and services.
 
-        // Create system prompt
-        const systemPrompt = `You are a helpful AI assistant for Hushh, a fintech company. You help users understand Hushh's products and services. 
+- Use the provided context as the main source of truth.
+- If the context doesn’t fully answer, say so and provide general information about Hushh.
+- Keep answers conversational, professional, and concise.
+- If a source has a link, naturally include it in your response (e.g., "You can learn more here: <link>").
+- Never make up links or information.
 
-Use the following context to answer questions accurately:
-${context}
+Context:
+${context}`;
 
-If the context doesn't contain enough information to answer the question, you can provide general information about Hushh but be clear about what you know and what you don't know.
-
-Always be helpful, professional, and accurate. If you're unsure about something, say so rather than making up information.`;
-
-        // Create user message
-        const userMessage = `User Query: ${query}
-
-${conversationContext ? `Previous conversation:\n${conversationContext}\n\n` : ''}Please provide a helpful response about Hushh based on the context provided, keep it detailed but crisp
-.`;
+        // Build messages with history + current user query
+        const messages = [
+            { role: "system", content: systemPrompt },
+            ...(conversation_history || []).map((exchange) => ({
+                role: exchange.role,
+                content: exchange.content,
+            })),
+            { role: "user", content: query },
+        ];
 
         // Generate response using OpenAI
         const completion = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
-            messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userMessage }
-            ],
+            messages,
             max_tokens: 500,
             temperature: 0.7,
         });
 
         const response = completion.choices[0].message.content;
 
+        // Send response with sources (including links)
         res.json({
             success: true,
-            response: response,
-            sources: similarContent ? similarContent.map(item => ({
-                content: item.content.substring(0, 100) + '...',
-                category: item.category,
-                metadata: item.metadata
-            })) : [],
-            conversation_id: Date.now().toString()
+            response,
+            sources: similarContent
+                ? similarContent.map((item) => ({
+                      content: item.content.substring(0, 120) + "...",
+                      category: item.category,
+                      metadata: item.metadata,
+                      url: item.metadata?.url || item.url || null,
+                  }))
+                : [],
+            conversation_id: Date.now().toString(),
         });
-
     } catch (error) {
-        console.error('Chat API error:', error);
+        console.error("Chat API error:", error);
         res.status(500).json({
             success: false,
-            message: 'Error processing chat request',
-            error: error.message
+            message: "Error processing chat request",
+            error: error.message,
         });
     }
 });
