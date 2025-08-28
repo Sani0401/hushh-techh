@@ -166,18 +166,34 @@ ${context}`;
 
         // Generate response using OpenAI
         const completion = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
+            model: "gpt-4o-mini",
             messages,
             max_tokens: 500,
             temperature: 0.7,
         });
 
-        const response = completion.choices[0].message.content;
+        let response = completion.choices[0].message.content;
 
-        // Send response with sources (including links)
+        // Extract any URLs present in the model's response
+        const urlRegex = /(https?:\/\/[^\s)>"']+)/g;
+        const responseLinks = Array.from(new Set((response.match(urlRegex) || [])));
+
+        // Remove URLs from the response text
+        response = response.replace(urlRegex, "").trim();
+
+        // Collect URLs from retrieved sources
+        const sourceLinks = (similarContent || [])
+            .map((item) => item?.metadata?.url || item?.url)
+            .filter(Boolean);
+
+        // Merge and de-duplicate
+        const links = Array.from(new Set([...responseLinks, ...sourceLinks]));
+
+        // Send response with sources and links
         res.json({
             success: true,
-            response,
+            response, // cleaned response without URLs
+            links,    // all URLs here
             sources: similarContent
                 ? similarContent.map((item) => ({
                       content: item.content.substring(0, 120) + "...",
@@ -198,7 +214,4 @@ ${context}`;
     }
 });
 
-
-
-
-export default hushhRouter; 
+export default hushhRouter;
