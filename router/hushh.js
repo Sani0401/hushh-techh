@@ -1,9 +1,13 @@
-import express, { Router } from "express";
+
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
-
+import path from "path";
+import { v4 as uuidv4 } from "uuid";
+import express from "express";
+import multer from "multer";
+import questions from "../src/config/hushh_preference_questionaire.js";
 const hushhRouter = express.Router();
-
+const upload = multer({ storage: multer.memoryStorage() });
 // Initialize OpenAI client
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -172,14 +176,11 @@ ${context}`;
             temperature: 0.7,
         });
 
-        let response = completion.choices[0].message.content;
+        const response = completion.choices[0].message.content;
 
         // Extract any URLs present in the model's response
         const urlRegex = /(https?:\/\/[^\s)>"']+)/g;
         const responseLinks = Array.from(new Set((response.match(urlRegex) || [])));
-
-        // Remove URLs from the response text
-        response = response.replace(urlRegex, "").trim();
 
         // Collect URLs from retrieved sources
         const sourceLinks = (similarContent || [])
@@ -192,8 +193,8 @@ ${context}`;
         // Send response with sources and links
         res.json({
             success: true,
-            response, // cleaned response without URLs
-            links,    // all URLs here
+            response,
+            links,
             sources: similarContent
                 ? similarContent.map((item) => ({
                       content: item.content.substring(0, 120) + "...",
@@ -213,5 +214,219 @@ ${context}`;
         });
     }
 });
+
+
+hushhRouter.post("/user-data", async (req, res) => {
+    try {
+        const { email, name, gender, dob, phone_number, address, contact_source } = req.body;
+        console.log(req.body);
+        
+        if (!email || !name || !gender || !dob || !phone_number || !address || !contact_source) {
+            return res.status(400).json({
+                success: false,
+                message: "All fields are required",
+            });
+        }
+
+        const { data, error } = await supabase
+            .from("users")
+            .update({
+                email,
+                name,
+                gender,
+                dob,
+                phone_number,
+                address,
+                contact_source,
+            })
+            .eq("email", email)
+            .select();
+
+        console.log("Supabase response:", { data, error });
+
+        if (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Error storing user data",
+                error: error.message,
+            });
+        }
+
+        if (!data || data.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "No user found with this email to update",
+            });
+        }
+
+        res.status(201).json({
+            success: true,
+            message: "User data stored successfully",
+            data: data[0],
+        });
+    } catch (error) {
+        console.error("User data exception:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error storing user data",
+            error: error.message,
+        });
+    }
+});
+
+hushhRouter.post("/upload-images", upload.array("images", 10), async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                message: "Email is required",
+            });
+        }
+
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "No images uploaded",
+            });
+        }
+
+        const uploadedFiles = [];
+
+        for (const file of req.files) {
+            const ext = path.extname(file.originalname); // e.g. ".jpg"
+            const uniqueName = `${uuidv4()}${ext}`;
+            const filePath = `${email}/${uniqueName}`; // folder = email
+
+            const { error } = await supabase.storage
+                .from("hushh_profile_photos") // replace with your Supabase bucket name
+                .upload(filePath, file.buffer, {
+                    contentType: file.mimetype,
+                    upsert: true, // overwrite if same path exists
+                });
+
+            if (error) {
+                console.error("Upload error:", error);
+                return res.status(500).json({
+                    success: false,
+                    message: "Error uploading image",
+                    error: error.message,
+                });
+            }
+
+            const { data: { publicUrl } } = supabase.storage
+                .from("hushh_profile_photos")
+                .getPublicUrl(filePath);
+
+            uploadedFiles.push(publicUrl);
+        }
+
+        res.status(201).json({
+            success: true,
+            message: "Images uploaded successfully",
+            files: uploadedFiles,
+        });
+    } catch (error) {
+        console.error("Upload exception:", error);
+        res.status(500).json({
+            success: false,
+            message: "Server error during upload",
+            error: error.message,
+        });
+    }
+});
+
+hushhRouter.post("/user-socials", async(req,res) =>{
+    try{
+        const{instagram_id, linkedin_id, twitter_id, facebook_id, email} = req.body;
+        const {data, error} = await supabase.from('users').update({
+            social_media_link:[{instagram:instagram_id}, {linkedin:linkedin_id}, {twitter:twitter_id}, {facebook:facebook_id}]
+        }).eq('email', email)
+        .select();
+        if(error){
+            return res.status(500).json({
+                success: false,
+                message: "Error storing user socials",
+                error: error.message,
+            });
+        }
+        res.status(201).json({
+            success: true,
+            message: "User socials stored successfully",
+            data: data[0],
+        });
+    }
+    catch(error){
+        console.error("User socials exception:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error storing user socials",
+            error: error.message,
+        });
+    }
+})
+
+
+hushhRouter.get("/preference-question", async(req,res) =>{
+    try{
+      return res.status(200).json({
+        success: true,
+        message: "Preference questionaire fetched successfully",
+        data: questions,
+      });
+    }catch(error){
+      console.error("Preference questionaire exception:", error);
+      res.status(500).json({
+        success: false,
+        message: "Error fetching preference questionaire",
+        error: error.message,
+      });
+    }
+})
+
+
+hushhRouter.post("/save-preferences", async (req, res) => {
+    try {
+      const { email, answers } = req.body;
+    console.log(email);
+    
+      if (!email || !answers) {
+        return res.status(400).json({
+          success: false,
+          message: "Email and answers are required",
+        });
+      }
+  
+      // Update user_preference JSON in users table
+      const { data, error } = await supabase
+        .from("users")
+        .update({ user_preference: answers })
+        .eq("email", email);
+
+  
+      if (error) {
+        console.error("Preference save error:", error);
+        return res.status(500).json({
+          success: false,
+          message: "Error saving preferences",
+          error: error.message,
+        });
+      }
+  
+  
+      res.status(200).json({
+        success: true,
+        message: "Preferences saved successfully"
+      });
+    } catch (error) {
+      console.error("Preference save exception:", error);
+      res.status(500).json({
+        success: false,
+        message: "Server error saving preferences",
+        error: error.message,
+      });
+    }
+  });
 
 export default hushhRouter;
