@@ -428,5 +428,59 @@ hushhRouter.post("/save-preferences", async (req, res) => {
       });
     }
   });
-
+  hushhRouter.get("/user-details", async (req, res) => {
+    try {
+      const { email } = req.body;
+      console.log(email);
+  
+      let user_details = {};
+  
+      // Get user data from "users" table
+      const { data, error } = await supabase
+        .from("users")
+        .select("*")
+        .eq("email", email);
+  
+      if (error) throw error;
+  
+      user_details.user_data = data;
+  
+      // Get profile pictures from Supabase storage
+      const { data: profilePictureData, error: profilePictureError } =
+        await supabase.storage.from("hushh_profile_photos").list(email);
+  
+      if (profilePictureError) {
+        return res.status(500).json({
+          success: false,
+          message: "Error fetching user profile pictures",
+          error: profilePictureError.message,
+        });
+      }
+  
+      // Generate public URLs for each image
+      const profilePictureUrls = profilePictureData.map((file) => {
+        const { data: publicUrlData } = supabase.storage
+          .from("hushh_profile_photos")
+          .getPublicUrl(`${email}/${file.name}`);
+  
+        return publicUrlData.publicUrl;
+      });
+  
+      user_details.profile_pictures = profilePictureUrls;
+  
+      return res.status(200).json({
+        success: true,
+        message: "User details fetched successfully",
+        data: user_details,
+      });
+    } catch (error) {
+      console.error("User details exception:", error);
+      res.status(500).json({
+        success: false,
+        message: "Error fetching user details",
+        error: error.message,
+      });
+    }
+  });
+  
 export default hushhRouter;
